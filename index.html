@@ -90,6 +90,11 @@
       <button id="doOcr" class="btn btn-success" disabled>🔍 Scanner</button>
       <button id="exportPdf" class="btn btn-secondary">📄 Export PDF</button>
       <button id="clearHistory" class="btn btn-danger">🗑️ Effacer</button>
+      <!-- === Google Drive === -->
+      <span style="flex:1"></span>
+      <button id="gConnect" class="btn btn-primary">🔐 Se connecter Drive</button>
+      <button id="gSave" class="btn btn-secondary" disabled>💾 Sauver sur Drive</button>
+      <button id="gLoad" class="btn btn-secondary" disabled>☁️ Charger de Drive</button>
     </div>
 
     <!-- FILTRES -->
@@ -199,6 +204,9 @@
   <script src="https://unpkg.com/tesseract.js@2.1.5/dist/tesseract.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+  <!-- Google Identity Services + (optional) gapi for discovery -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
   
   <script>
   // ---------- Sélecteurs ----------
@@ -234,6 +242,11 @@
   const filterMonth = document.getElementById('filterMonth');
   const filterCategory = document.getElementById('filterCategory');
 
+  // Google Drive
+  const gConnect = document.getElementById('gConnect');
+  const gSave = document.getElementById('gSave');
+  const gLoad = document.getElementById('gLoad');
+
   // ---------- État ----------
   let stream = null;
   let currentImage = null;
@@ -241,6 +254,13 @@
   let collapsedMonths = new Set(); // Pour gérer les mois repliés
   let currentMonthFilter = 'all';
   let currentCategoryFilter = 'all';
+
+  // Google OAuth2 state
+  const GOOGLE_CLIENT_ID = "1091571219099-ev8cbh3d7vbkgr6p5gah5us88m57ibsm.apps.googleusercontent.com"; // fournie par vous
+  const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+  let tokenClient = null; // GIS token client
+  let accessToken = null;
+  let appDataFileId = null; // id du fichier tickets.json dans appDataFolder
 
   // ---------- Stockage (avec fallback mémoire) ----------
   function storageAvailable() {
@@ -254,14 +274,14 @@
   const HAS_STORAGE = storageAvailable();
   const memStore = { value: '[]' };
 
-  function saveTickets() {
+  function saveTicketsLocal() {
     const data = JSON.stringify(tickets);
     try {
       if (HAS_STORAGE) localStorage.setItem('tickets', data);
       else memStore.value = data;
     } catch(_) { /* ignore */ }
   }
-  function loadTickets() {
+  function loadTicketsLocal() {
     try {
       const saved = HAS_STORAGE ? localStorage.getItem('tickets') : memStore.value;
       if (saved) {
@@ -275,7 +295,7 @@
   }
 
   // ---------- Utilitaires ----------
-  function to2(n){return (Math.round(n*100)/100).toFixed(2);}
+  function to2(n){return (Math.round(n*100)/100).toFixed(2);} 
   function calcFromHT(ht, rate){
     const r = parseFloat(rate)||0;
     const tva = ht * (r/100);
@@ -307,7 +327,8 @@
     statusEl.textContent = msg;
     statusEl.className = 'status ' + type;
     statusEl.classList.remove('hidden');
-    setTimeout(() => statusEl.classList.add('hidden'), 4000);
+    clearTimeout(showStatus._t);
+    showStatus._t = setTimeout(() => statusEl.classList.add('hidden'), 4000);
   }
 
   // ---------- Ajout manuel (aperçu TTC) ----------
@@ -345,7 +366,7 @@
     };
     tickets.push(ticket);
     sortTickets();
-    saveTickets();
+    saveTicketsLocal();
     updateFilters();
     renderTickets();
     showStatus('✅ Ticket ajouté manuellement !', 'success');
@@ -544,7 +565,7 @@
     };
     tickets.push(ticket);
     sortTickets();
-    saveTickets();
+    saveTicketsLocal();
     updateFilters();
     renderTickets();
   }
@@ -680,11 +701,11 @@
           <td><input type="number" step="0.01" value="${t.ht}" onchange="updateHT(${t.id},this.value)" style="width:80px"></td>
           <td>
             <select onchange="updateRate(${t.id}, this.value)" style="width:90px">
-              <option value="20" ${(+t.tvaRate===20)?'selected':''}>20 %</option>
-              <option value="10" ${(+t.tvaRate===10)?'selected':''}>10 %</option>
-              <option value="5.5" ${(+t.tvaRate===5.5)?'selected':''}>5,5 %</option>
-              <option value="2.1" ${(+t.tvaRate===2.1)?'selected':''}>2,1 %</option>
-              <option value="0" ${(+t.tvaRate===0)?'selected':''}>0 %</option>
+              <option value="20" ${( +t.tvaRate===20)?'selected':''}>20 %</option>
+              <option value="10" ${( +t.tvaRate===10)?'selected':''}>10 %</option>
+              <option value="5.5" ${( +t.tvaRate===5.5)?'selected':''}>5,5 %</option>
+              <option value="2.1" ${( +t.tvaRate===2.1)?'selected':''}>2,1 %</option>
+              <option value="0" ${( +t.tvaRate===0)?'selected':''}>0 %</option>
             </select>
           </td>
           <td>${t.tva}</td>
@@ -725,7 +746,7 @@
     ticket.ht = to2(ht);
     ticket.tva = tva;
     ticket.ttc = ttc;
-    saveTickets();
+    saveTicketsLocal();
     renderTickets();
   };
 
@@ -738,7 +759,7 @@
     const {tva, ttc} = calcFromHT(ht, rate);
     ticket.tva = tva;
     ticket.ttc = ttc;
-    saveTickets();
+    saveTicketsLocal();
     renderTickets();
   };
 
@@ -748,14 +769,14 @@
     ticket[field] = val;
     if (field === 'date' || resort) sortTickets();
     if (field === 'category') updateFilters();
-    saveTickets();
+    saveTicketsLocal();
     renderTickets();
   };
 
   window.deleteTicket = function(id) {
     if (confirm('Supprimer ce ticket ?')) {
       tickets = tickets.filter(t => t.id !== id);
-      saveTickets();
+      saveTicketsLocal();
       updateFilters();
       renderTickets();
     }
@@ -764,7 +785,7 @@
   clearHistoryBtn.addEventListener('click', () => {
     if (confirm('Effacer TOUS les tickets ?')) {
       tickets = [];
-      saveTickets();
+      saveTicketsLocal();
       renderTickets();
       showStatus('✅ Historique effacé', 'success');
     }
@@ -833,8 +854,137 @@
     showStatus('✅ PDF téléchargé !', 'success');
   });
 
+  // ===================== Google Drive sync (appDataFolder) =====================
+  // Sécurité : on N'UTILISE PAS le client_secret côté navigateur.
+  // On utilise Google Identity Services (token implicite) + REST Drive v3.
+
+  // Petit helper fetch avec token
+  async function gFetch(url, options = {}) {
+    if (!accessToken) throw new Error('Non connecté à Google');
+    const headers = Object.assign({}, options.headers || {}, {
+      'Authorization': `Bearer ${accessToken}`
+    });
+    const res = await fetch(url, { ...options, headers });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`HTTP ${res.status} — ${text}`);
+    }
+    return res;
+  }
+
+  // Trouve ou crée le fichier appDataFolder/tickets.json
+  async function ensureAppDataFile() {
+    // 1) recherche
+    const q = encodeURIComponent("name='tickets.json' and 'appDataFolder' in parents and trashed=false");
+    const listUrl = `https://www.googleapis.com/drive/v3/files?q=${q}&spaces=appDataFolder&fields=files(id,name)`;
+    const listRes = await gFetch(listUrl);
+    const list = await listRes.json();
+    if (list.files && list.files.length > 0) {
+      appDataFileId = list.files[0].id;
+      return appDataFileId;
+    }
+    // 2) création multipart (métadonnées + contenu vide [])
+    const meta = { name: 'tickets.json', parents: ['appDataFolder'] };
+    const boundary = '-------314159265358979323846';
+    const delimiter = `\r\n--${boundary}\r\n`;
+    const closeDelim = `\r\n--${boundary}--`;
+    const body = 
+      delimiter +
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+      JSON.stringify(meta) +
+      delimiter +
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+      JSON.stringify([]) +
+      closeDelim;
+    const createRes = await gFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+      method: 'POST',
+      headers: { 'Content-Type': 'multipart/related; boundary=' + boundary },
+      body
+    });
+    const created = await createRes.json();
+    appDataFileId = created.id;
+    return appDataFileId;
+  }
+
+  async function driveSave() {
+    try {
+      showStatus('☁️ Sauvegarde sur Drive…', 'loading');
+      await ensureAppDataFile();
+      const jsonStr = JSON.stringify(tickets);
+      await gFetch(`https://www.googleapis.com/upload/drive/v3/files/${appDataFileId}?uploadType=media`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: jsonStr
+      });
+      showStatus('✅ Données sauvegardées sur Google Drive', 'success');
+    } catch (e) {
+      showStatus('❌ Échec sauvegarde Drive: ' + e.message, 'error');
+    }
+  }
+
+  async function driveLoad() {
+    try {
+      showStatus('☁️ Chargement depuis Drive…', 'loading');
+      await ensureAppDataFile();
+      const res = await gFetch(`https://www.googleapis.com/drive/v3/files/${appDataFileId}?alt=media`);
+      const remoteTickets = await res.json();
+      if (Array.isArray(remoteTickets)) {
+        tickets = remoteTickets.map(t => ({
+          ...t,
+          tvaRate: typeof t.tvaRate === 'undefined' ? 20 : t.tvaRate,
+          category: t.category || 'Divers'
+        }));
+        sortTickets();
+        saveTicketsLocal(); // cache local pour offline
+        updateFilters();
+        renderTickets();
+        showStatus('✅ Données chargées depuis Google Drive', 'success');
+      } else {
+        showStatus('ℹ️ Fichier vide sur Drive (aucun ticket).', 'loading');
+      }
+    } catch (e) {
+      showStatus('❌ Échec chargement Drive: ' + e.message, 'error');
+    }
+  }
+
+  function enableDriveButtons(enabled) {
+    gSave.disabled = !enabled;
+    gLoad.disabled = !enabled;
+  }
+
+  // Connexion Google — utilise GIS pour obtenir un accessToken à la demande
+  window.addEventListener('load', () => {
+    // init GIS quand disponible
+    function initGIS() {
+      if (!window.google || !google.accounts || !google.accounts.oauth2) {
+        setTimeout(initGIS, 200);
+        return;
+      }
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: DRIVE_SCOPE,
+        callback: (resp) => {
+          if (resp && resp.access_token) {
+            accessToken = resp.access_token;
+            enableDriveButtons(true);
+            showStatus('🔐 Connecté à Google Drive', 'success');
+          }
+        }
+      });
+    }
+    initGIS();
+  });
+
+  gConnect.addEventListener('click', () => {
+    if (!tokenClient) { showStatus('⏳ Initialisation Google… réessayez', 'loading'); return; }
+    tokenClient.requestAccessToken({ prompt: 'consent' });
+  });
+
+  gSave.addEventListener('click', driveSave);
+  gLoad.addEventListener('click', driveLoad);
+
   // ---------- Initialisation ----------
-  loadTickets();
+  loadTicketsLocal();
   sortTickets();
   updateFilters();
   renderTickets();
